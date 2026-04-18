@@ -1,44 +1,46 @@
 <?php 
 require_once '../config/config.php';
 
-if (!isLoggedIn() || getUserType() != 'customer') {
+if (!isLoggedIn() || getUserType() != 'admin') {
     redirect('login.php');
 }
 
 $conn = getDBConnection();
-$userId = getUserId();
+
 $stats = [
     'total_bookings' => 0,
     'pending' => 0,
+    'confirmed' => 0,
     'completed' => 0,
-    'total_spent' => 0
+    'total_revenue' => 0,
+    'total_customers' => 0,
+    'total_staff' => 0,
+    'active_services' => 0
 ];
 
 $query = "SELECT 
     COUNT(*) as total_bookings,
     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+    SUM(CASE WHEN status = 'confirmed' OR status = 'assigned' THEN 1 ELSE 0 END) as confirmed,
     SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-    SUM(CASE WHEN payment_status = 'paid' THEN total_price ELSE 0 END) as total_spent
-    FROM bookings WHERE customer_id = ?";
+    SUM(CASE WHEN payment_status = 'paid' THEN total_price ELSE 0 END) as total_revenue
+    FROM bookings";
+$result = $conn->query($query);
+$bookingStats = $result->fetch_assoc();
+$stats = array_merge($stats, $bookingStats);
 
-$stmt = $conn->prepare($query);
-$stmt->bind_param("i", $userId);
-$stmt->execute();
-$result = $stmt->get_result();
-$stats = $result->fetch_assoc();
-$stmt->close();
+$stats['total_customers'] = $conn->query("SELECT COUNT(*) as count FROM users WHERE user_type = 'customer'")->fetch_assoc()['count'];
+$stats['total_staff'] = $conn->query("SELECT COUNT(*) as count FROM users WHERE user_type = 'staff'")->fetch_assoc()['count'];
+$stats['active_services'] = $conn->query("SELECT COUNT(*) as count FROM services WHERE status = 'active'")->fetch_assoc()['count'];
 
-$recentQuery = "SELECT b.*, s.service_name, s.category 
+$recentQuery = "SELECT b.*, s.service_name, u.full_name as customer_name 
                 FROM bookings b 
                 JOIN services s ON b.service_id = s.service_id 
-                WHERE b.customer_id = ? 
+                JOIN users u ON b.customer_id = u.user_id 
                 ORDER BY b.created_at DESC 
-                LIMIT 5";
-$stmt = $conn->prepare($recentQuery);
-$stmt->bind_param("i", $userId);
-$stmt->execute();
-$recentBookings = $stmt->get_result();
-$stmt->close();
+                LIMIT 10";
+$recentBookings = $conn->query($recentQuery);
+
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -46,32 +48,37 @@ $conn->close();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Customer Dashboard - <?php echo SITE_NAME; ?></title>
+    <title>Admin Dashboard - <?php echo SITE_NAME; ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         body { background: #f5f5f5; }
-        .navbar { background: linear-gradient(135deg, #028090, #02C39A); }
+        .navbar { background: linear-gradient(135deg, #1E2761, #764ba2); }
         .stat-card {
             background: white;
             border-radius: 15px;
             padding: 25px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             margin-bottom: 20px;
+            transition: transform 0.3s;
         }
+        .stat-card:hover { transform: translateY(-5px); }
         .stat-card i { font-size: 2.5rem; opacity: 0.8; }
         .stat-value { font-size: 2rem; font-weight: bold; margin: 10px 0; }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark">
-        <div class="container">
+        <div class="container-fluid">
             <a class="navbar-brand" href="#">
-                <i class="fas fa-broom"></i> <?php echo SITE_NAME; ?>
+                <i class="fas fa-shield-alt"></i> Admin Panel
             </a>
             <div class="navbar-nav ms-auto">
+                <a href="bookings.php" class="nav-link text-white">
+                    <i class="fas fa-calendar"></i> Bookings
+                </a>
                 <span class="nav-link text-white">
-                    <i class="fas fa-user"></i> <?php echo getUserName(); ?>
+                    <i class="fas fa-user-shield"></i> <?php echo getUserName(); ?>
                 </span>
                 <a href="../logout.php" class="nav-link text-white">
                     <i class="fas fa-sign-out-alt"></i> Logout
@@ -80,9 +87,9 @@ $conn->close();
         </div>
     </nav>
 
-    <div class="container mt-4">
-        <h2><i class="fas fa-tachometer-alt"></i> Dashboard</h2>
-        <p class="text-muted">Welcome back, <?php echo getUserName(); ?>!</p>
+    <div class="container-fluid mt-4">
+        <h2><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
+        <p class="text-muted">System Overview & Statistics</p>
 
         <div class="row mt-4">
             <div class="col-md-3">
@@ -96,7 +103,7 @@ $conn->close();
                 <div class="stat-card">
                     <i class="fas fa-clock text-warning"></i>
                     <div class="stat-value text-warning"><?php echo $stats['pending']; ?></div>
-                    <div class="text-muted">Pending</div>
+                    <div class="text-muted">Pending Approval</div>
                 </div>
             </div>
             <div class="col-md-3">
@@ -109,8 +116,32 @@ $conn->close();
             <div class="col-md-3">
                 <div class="stat-card">
                     <i class="fas fa-money-bill-wave text-info"></i>
-                    <div class="stat-value text-info"><?php echo formatMoney($stats['total_spent'] ?? 0); ?></div>
-                    <div class="text-muted">Total Spent</div>
+                    <div class="stat-value text-info"><?php echo formatMoney($stats['total_revenue']); ?></div>
+                    <div class="text-muted">Total Revenue</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-4">
+                <div class="stat-card">
+                    <i class="fas fa-users text-primary"></i>
+                    <div class="stat-value text-primary"><?php echo $stats['total_customers']; ?></div>
+                    <div class="text-muted">Customers</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="stat-card">
+                    <i class="fas fa-user-tie text-secondary"></i>
+                    <div class="stat-value text-secondary"><?php echo $stats['total_staff']; ?></div>
+                    <div class="text-muted">Staff Members</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="stat-card">
+                    <i class="fas fa-wrench text-success"></i>
+                    <div class="stat-value text-success"><?php echo $stats['active_services']; ?></div>
+                    <div class="text-muted">Active Services</div>
                 </div>
             </div>
         </div>
@@ -122,11 +153,11 @@ $conn->close();
                         <i class="fas fa-bolt"></i> Quick Actions
                     </div>
                     <div class="card-body">
-                        <a href="services.php" class="btn btn-primary me-2">
-                            <i class="fas fa-plus"></i> Book New Service
-                        </a>
-                        <a href="my_bookings.php" class="btn btn-outline-primary">
-                            <i class="fas fa-list"></i> View My Bookings
+                        <a href="bookings.php" class="btn btn-warning me-2">
+                            <i class="fas fa-clock"></i> View Pending Bookings
+                            <?php if ($stats['pending'] > 0): ?>
+                                <span class="badge bg-danger"><?php echo $stats['pending']; ?></span>
+                            <?php endif; ?>
                         </a>
                     </div>
                 </div>
@@ -137,61 +168,56 @@ $conn->close();
             <div class="col-md-12">
                 <div class="card">
                     <div class="card-header">
-                        <i class="fas fa-history"></i> Recent Bookings
+                        <i class="fas fa-list"></i> Recent Bookings
                     </div>
                     <div class="card-body">
-                        <?php if ($recentBookings->num_rows > 0): ?>
-                            <div class="table-responsive">
-                                <table class="table">
-                                    <thead>
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Customer</th>
+                                        <th>Service</th>
+                                        <th>Date</th>
+                                        <th>Status</th>
+                                        <th>Amount</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php while ($booking = $recentBookings->fetch_assoc()): ?>
                                         <tr>
-                                            <th>ID</th>
-                                            <th>Service</th>
-                                            <th>Date</th>
-                                            <th>Status</th>
-                                            <th>Amount</th>
+                                            <td>#<?php echo $booking['booking_id']; ?></td>
+                                            <td><?php echo htmlspecialchars($booking['customer_name']); ?></td>
+                                            <td><?php echo htmlspecialchars($booking['service_name']); ?></td>
+                                            <td><?php echo formatDate($booking['booking_date']); ?></td>
+                                            <td>
+                                                <?php
+                                                $colors = [
+                                                    'pending' => 'warning',
+                                                    'confirmed' => 'info',
+                                                    'assigned' => 'primary',
+                                                    'in_progress' => 'secondary',
+                                                    'completed' => 'success',
+                                                    'cancelled' => 'danger'
+                                                ];
+                                                ?>
+                                                <span class="badge bg-<?php echo $colors[$booking['status']]; ?>">
+                                                    <?php echo ucfirst($booking['status']); ?>
+                                                </span>
+                                            </td>
+                                            <td><?php echo formatMoney($booking['total_price']); ?></td>
+                                            <td>
+                                                <a href="view_booking.php?id=<?php echo $booking['booking_id']; ?>" 
+                                                   class="btn btn-sm btn-outline-primary">
+                                                    <i class="fas fa-eye"></i>
+                                                </a>
+                                            </td>
                                         </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php while ($booking = $recentBookings->fetch_assoc()): ?>
-                                            <tr>
-                                                <td>#<?php echo $booking['booking_id']; ?></td>
-                                                <td>
-                                                    <?php echo htmlspecialchars($booking['service_name']); ?>
-                                                    <br><small class="text-muted"><?php echo ucfirst($booking['category']); ?></small>
-                                                </td>
-                                                <td><?php echo formatDate($booking['booking_date']); ?></td>
-                                                <td>
-                                                    <?php
-                                                    $statusColors = [
-                                                        'pending' => 'warning',
-                                                        'confirmed' => 'info',
-                                                        'assigned' => 'primary',
-                                                        'in_progress' => 'secondary',
-                                                        'completed' => 'success',
-                                                        'cancelled' => 'danger'
-                                                    ];
-                                                    $color = $statusColors[$booking['status']] ?? 'secondary';
-                                                    ?>
-                                                    <span class="badge bg-<?php echo $color; ?>">
-                                                        <?php echo ucfirst($booking['status']); ?>
-                                                    </span>
-                                                </td>
-                                                <td><?php echo formatMoney($booking['total_price']); ?></td>
-                                            </tr>
-                                        <?php endwhile; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        <?php else: ?>
-                            <div class="text-center py-5">
-                                <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
-                                <p class="text-muted">No bookings yet</p>
-                                <a href="services.php" class="btn btn-primary">
-                                    <i class="fas fa-plus"></i> Book Your First Service
-                                </a>
-                            </div>
-                        <?php endif; ?>
+                                    <?php endwhile; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
